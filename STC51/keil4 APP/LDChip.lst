@@ -1,0 +1,412 @@
+C51 COMPILER V9.59.0.0   LDCHIP                                                            05/21/2021 11:49:55 PAGE 1   
+
+
+C51 COMPILER V9.59.0.0, COMPILATION OF MODULE LDCHIP
+OBJECT MODULE PLACED IN ..\obj\LDChip.obj
+COMPILER INVOKED BY: D:\Keil_v5\C51\BIN\C51.EXE ..\code\LDChip.c OPTIMIZE(8,SPEED) BROWSE INCDIR(..\code;..\user) DEBUG 
+                    -OBJECTEXTEND PRINT(.\LDChip.lst) TABS(2) OBJECT(..\obj\LDChip.obj)
+
+line level    source
+
+   1          /*******************************************************
+   2          **  CPU: STC11L08XE
+   3          **  晶振：22.1184MHZ
+   4          **  波特率：9600 bit/S
+   5          **  延时口令模式： 即识别时都说“小杰”这个口令唤醒后，如果15秒内不进行语音识别则退出唤醒
+   6          /*********************************************************/
+   7          #include "config.h"
+   8          
+   9          extern void delay(unsigned long uldata);
+  10          
+  11          uint8 idata ucRegVal;
+  12          extern uint8 idata nAsrStatus;
+  13          
+  14          void ProcessInt0(void);
+  15          
+  16          /************************************************************************
+  17          功能描述：   复位LD模块
+  18          入口参数：   none
+  19          返 回 值：   none
+  20          其他说明：   none
+  21          **************************************************************************/
+  22          void LD_Reset()
+  23          {
+  24   1        RSTB = 1;
+  25   1        delay(5);
+  26   1        RSTB = 0;
+  27   1        delay(5);
+  28   1        RSTB = 1;
+  29   1      
+  30   1        delay(5);
+  31   1        CSB = 0;
+  32   1        delay(5);
+  33   1        CSB = 1;
+  34   1        delay(5);
+  35   1      }
+  36          /************************************************************************
+  37          功能描述： LD模块命令初始化
+  38          入口参数： none
+  39          返 回 值： none
+  40          其他说明： 该函数为出厂配置，一般不需要修改；
+  41                     有兴趣的客户可对照开发手册根据需要自行修改。
+  42          **************************************************************************/
+  43          void LD_Init_Common()
+  44          {
+  45   1        LD_ReadReg(0x06);
+  46   1        LD_WriteReg(0x17, 0x35);
+  47   1        delay(10);
+  48   1        LD_ReadReg(0x06);
+  49   1      
+  50   1        LD_WriteReg(0x89, 0x03);
+  51   1        delay(5);
+  52   1        LD_WriteReg(0xCF, 0x43);
+  53   1        delay(5);
+  54   1        LD_WriteReg(0xCB, 0x02);
+C51 COMPILER V9.59.0.0   LDCHIP                                                            05/21/2021 11:49:55 PAGE 2   
+
+  55   1      
+  56   1        /*PLL setting*/
+  57   1        LD_WriteReg(0x11, LD_PLL_11);
+  58   1      
+  59   1        LD_WriteReg(0x1E, 0x00);
+  60   1        LD_WriteReg(0x19, LD_PLL_ASR_19);
+  61   1        LD_WriteReg(0x1B, LD_PLL_ASR_1B);
+  62   1        LD_WriteReg(0x1D, LD_PLL_ASR_1D);
+  63   1        delay(10);
+  64   1      
+  65   1        LD_WriteReg(0xCD, 0x04);
+  66   1        //  LD_WriteReg(0x17, 0x4c);
+  67   1        delay(5);
+  68   1        LD_WriteReg(0xB9, 0x00);
+  69   1        LD_WriteReg(0xCF, 0x4F);
+  70   1        LD_WriteReg(0x6F, 0xFF);
+  71   1      }
+  72          
+  73          /************************************************************************
+  74          功能描述：   LD模块 ASR功能初始化
+  75          入口参数：   none
+  76          返 回 值：   none
+  77          其他说明：   该函数为出厂配置，一般不需要修改；
+  78                     有兴趣的客户可对照开发手册根据需要自行修改。
+  79          **************************************************************************/
+  80          void LD_Init_ASR()
+  81          {
+  82   1        LD_Init_Common();
+  83   1        LD_WriteReg(0xBD, 0x00);
+  84   1        LD_WriteReg(0x17, 0x48);
+  85   1        delay(10);
+  86   1        LD_WriteReg(0x3C, 0x80);
+  87   1        LD_WriteReg(0x3E, 0x07);
+  88   1        LD_WriteReg(0x38, 0xff);
+  89   1        LD_WriteReg(0x3A, 0x07);
+  90   1        LD_WriteReg(0x40, 0);
+  91   1        LD_WriteReg(0x42, 8);
+  92   1        LD_WriteReg(0x44, 0);
+  93   1        LD_WriteReg(0x46, 8);
+  94   1        delay(1);
+  95   1      }
+  96          
+  97          /************************************************************************
+  98          功能描述：  中断处理函数
+  99          入口参数：   none
+ 100          返 回 值：   none
+ 101          其他说明：  当LD模块接收到音频信号时，将进入该函数，
+ 102                      判断识别是否有结果，如果没有从新配置寄
+ 103                      存器准备下一次的识别。
+ 104          **************************************************************************/
+ 105          void ProcessInt0(void)
+ 106          {
+ 107   1        uint8 nAsrResCount = 0;
+ 108   1      
+ 109   1        EX0 = 0;
+ 110   1        ucRegVal = LD_ReadReg(0x2B);
+ 111   1        LD_WriteReg(0x29, 0);
+ 112   1        LD_WriteReg(0x02, 0);
+ 113   1        if ((ucRegVal & 0x10) &&
+ 114   1          LD_ReadReg(0xb2) == 0x21 &&
+ 115   1          LD_ReadReg(0xbf) == 0x35) /*识别成功*/
+ 116   1        {
+C51 COMPILER V9.59.0.0   LDCHIP                                                            05/21/2021 11:49:55 PAGE 3   
+
+ 117   2          nAsrResCount = LD_ReadReg(0xba);
+ 118   2          if (nAsrResCount > 0 && nAsrResCount <= 4)
+ 119   2          {
+ 120   3            nAsrStatus = LD_ASR_FOUNDOK;
+ 121   3          }
+ 122   2          else
+ 123   2          {
+ 124   3            nAsrStatus = LD_ASR_FOUNDZERO;
+ 125   3          }
+ 126   2        } /*没有识别结果*/
+ 127   1        else
+ 128   1        {
+ 129   2          nAsrStatus = LD_ASR_FOUNDZERO;
+ 130   2        }
+ 131   1      
+ 132   1        LD_WriteReg(0x2b, 0);
+ 133   1        LD_WriteReg(0x1C, 0); /*写0:ADC不可用*/
+ 134   1      
+ 135   1        LD_WriteReg(0x29, 0);
+ 136   1        LD_WriteReg(0x02, 0);
+ 137   1        LD_WriteReg(0x2B, 0);
+ 138   1        LD_WriteReg(0xBA, 0);
+ 139   1        LD_WriteReg(0xBC, 0);
+ 140   1        LD_WriteReg(0x08, 1); /*清除FIFO_DATA*/
+ 141   1        LD_WriteReg(0x08, 0); /*清除FIFO_DATA后 再次写0*/
+ 142   1      
+ 143   1        EX0 = 1;
+ 144   1      }
+ 145          
+ 146          /************************************************************************
+ 147          功能描述：  运行ASR识别流程
+ 148          入口参数：  none
+ 149          返 回 值：  asrflag：1->启动成功， 0—>启动失败
+ 150          其他说明：  识别顺序如下:
+ 151                      1、RunASR()函数实现了一次完整的ASR语音识别流程
+ 152                      2、LD_AsrStart() 函数实现了ASR初始化
+ 153                      3、LD_AsrAddFixed() 函数实现了添加关键词语到LD3320芯片中
+ 154                      4、LD_AsrRun()  函数启动了一次ASR语音识别流程
+ 155                      任何一次ASR识别流程，都需要按照这个顺序，从初始化开始??
+ 156          **************************************************************************/
+ 157          uint8 RunASR(void)
+ 158          {
+ 159   1        uint8 i = 0;
+ 160   1        uint8 asrflag = 0;
+ 161   1        for (i = 0; i < 5; i++) //  防止由于硬件原因导致LD3320芯片工作不正常，所以一共尝试5次启动ASR识别流程
+ 162   1        {
+ 163   2          LD_AsrStart();
+ 164   2          delay(50);
+ 165   2          if (LD_AsrAddFixed() == 0)
+ 166   2          {
+ 167   3            LD_Reset(); //  LD3320芯片内部出现不正常，立即重启LD3320芯片
+ 168   3            delay(50);  //  并从初始化开始重新ASR识别流程
+ 169   3            continue;
+ 170   3          }
+ 171   2          delay(10);
+ 172   2          if (LD_AsrRun() == 0)
+ 173   2          {
+ 174   3            LD_Reset(); //  LD3320芯片内部出现不正常，立即重启LD3320芯片
+ 175   3            delay(50);  //  并从初始化开始重新ASR识别流程
+ 176   3            continue;
+ 177   3          }
+ 178   2          asrflag = 1;
+C51 COMPILER V9.59.0.0   LDCHIP                                                            05/21/2021 11:49:55 PAGE 4   
+
+ 179   2          break; // ASR流程启动成功，退出当前for循环。开始等待LD3320送出的中断信号
+ 180   2        }
+ 181   1      
+ 182   1        return asrflag;
+ 183   1      }
+ 184          /************************************************************************
+ 185          功能描述：  检测LD模块是否空闲
+ 186          入口参数：  none
+ 187          返 回 值：  flag：1-> 空闲
+ 188          其他说明：  none
+ 189          **************************************************************************/
+ 190          uint8 LD_Check_ASRBusyFlag_b2()
+ 191          {
+ 192   1        uint8 j;
+ 193   1        uint8 flag = 0;
+ 194   1        for (j = 0; j < 10; j++)
+ 195   1        {
+ 196   2          if (LD_ReadReg(0xb2) == 0x21)
+ 197   2          {
+ 198   3            flag = 1;
+ 199   3            break;
+ 200   3          }
+ 201   2          delay(10);
+ 202   2        }
+ 203   1        return flag;
+ 204   1      }
+ 205          /************************************************************************
+ 206          功能描述：  启动ASR
+ 207          入口参数：  none
+ 208          返 回 值：  none
+ 209          其他说明：  none
+ 210          **************************************************************************/
+ 211          void LD_AsrStart()
+ 212          {
+ 213   1        LD_Init_ASR();
+ 214   1      }
+ 215          /************************************************************************
+ 216          功能描述：  运行ASR
+ 217          入口参数：  none
+ 218          返 回 值：  1：启动成功
+ 219          其他说明：  none
+ 220          **************************************************************************/
+ 221          uint8 LD_AsrRun()
+ 222          {
+ 223   1        EX0 = 0;
+ 224   1        LD_WriteReg(0x35, MIC_VOL);
+ 225   1        LD_WriteReg(0x1C, 0x09);
+ 226   1        LD_WriteReg(0xBD, 0x20);
+ 227   1        LD_WriteReg(0x08, 0x01);
+ 228   1        delay(1);
+ 229   1        LD_WriteReg(0x08, 0x00);
+ 230   1        delay(1);
+ 231   1      
+ 232   1        if (LD_Check_ASRBusyFlag_b2() == 0)
+ 233   1        {
+ 234   2          return 0;
+ 235   2        }
+ 236   1        //  LD_WriteReg(0xB6, 0xa); //识别时间   1S
+ 237   1        //  LD_WriteReg(0xB5, 0x1E); //背景音段时间 300ms
+ 238   1        //  LD_WriteReg(0xB8, 10); //结束时间
+ 239   1      
+ 240   1        //  LD_WriteReg(0x1C, 0x07); //配置双通道音频信号做为输入信号
+C51 COMPILER V9.59.0.0   LDCHIP                                                            05/21/2021 11:49:55 PAGE 5   
+
+ 241   1        LD_WriteReg(0x1C, 0x0b); //配置麦克风做为输入信号
+ 242   1      
+ 243   1        LD_WriteReg(0xB2, 0xff);
+ 244   1        delay(1);
+ 245   1        LD_WriteReg(0x37, 0x06);
+ 246   1        delay(1);
+ 247   1        LD_WriteReg(0x37, 0x06);
+ 248   1        delay(5);
+ 249   1        LD_WriteReg(0x29, 0x10);
+ 250   1      
+ 251   1        LD_WriteReg(0xBD, 0x00);
+ 252   1        EX0 = 1;
+ 253   1        return 1;
+ 254   1      }
+ 255          /************************************************************************
+ 256          功能描述： 向LD模块添加关键词
+ 257          入口参数： none
+ 258          返 回 值： flag：1->添加成功
+ 259          其他说明： 用户修改.
+ 260          **************************************************************************/
+ 261          uint8 LD_AsrAddFixed()
+ 262          {
+ 263   1        uint8 k, flag;
+ 264   1        uint8 nAsrAddLength;
+ 265   1      #define DATE_A 50 /*数组二维数值*/
+ 266   1      #define DATE_B 20 /*数组一维数值*/
+ 267   1        uint8 code sRecog[DATE_A][DATE_B] =
+ 268   1          {
+ 269   1            "xun wu",
+ 270   1            "yao shi",
+ 271   1            "qian bao",
+ 272   1            "yao kong qi",
+ 273   1            "xiao yuan ka",
+ 274   1            "shou ji",
+ 275   1            "shu biao",
+ 276   1            "men ka",
+ 277   1            "you pan",
+ 278   1            "bei zi",
+ 279   1            "yao xiang",
+ 280   1            "er ji",
+ 281   1            "ji shi ben",
+ 282   1            "cun qian guan",
+ 283   1            "dian nao",
+ 284   1            "xue ya ji"}; /*添加关键词，用户修改*/
+ 285   1        uint8 code pCode[DATE_A] =
+ 286   1          {
+ 287   1            CODE_CMD,
+ 288   1            CODE_1,
+ 289   1            CODE_2,
+ 290   1            CODE_3,
+ 291   1            CODE_4,
+ 292   1            CODE_5,
+ 293   1            CODE_6,
+ 294   1            CODE_7,
+ 295   1            CODE_8,
+ 296   1            CODE_9,
+ 297   1            CODE_10,
+ 298   1            CODE_11,
+ 299   1            CODE_12,
+ 300   1            CODE_13,
+ 301   1            CODE_14,
+ 302   1            CODE_15,
+C51 COMPILER V9.59.0.0   LDCHIP                                                            05/21/2021 11:49:55 PAGE 6   
+
+ 303   1            CODE_16,
+ 304   1            CODE_17,
+ 305   1            CODE_18,
+ 306   1            CODE_19,
+ 307   1            CODE_20,
+ 308   1            CODE_21,
+ 309   1            CODE_22,
+ 310   1            CODE_23,
+ 311   1            CODE_24,
+ 312   1            CODE_25,
+ 313   1            CODE_26,
+ 314   1            CODE_27,
+ 315   1            CODE_28,
+ 316   1            CODE_29,
+ 317   1            CODE_30,
+ 318   1            CODE_31,
+ 319   1            CODE_32,
+ 320   1            CODE_33,
+ 321   1            CODE_34,
+ 322   1            CODE_35,
+ 323   1            CODE_36,
+ 324   1            CODE_37,
+ 325   1            CODE_38,
+ 326   1            CODE_39,
+ 327   1            CODE_40,
+ 328   1            CODE_41,
+ 329   1            CODE_42,
+ 330   1            CODE_43,
+ 331   1            CODE_44,
+ 332   1            CODE_45,
+ 333   1            CODE_46,
+ 334   1            CODE_47,
+ 335   1            CODE_48,
+ 336   1            CODE_49,
+ 337   1          }; /*添加识别码，用户修改*/
+ 338   1        flag = 1;
+ 339   1        for (k = 0; k < DATE_A; k++)
+ 340   1        {
+ 341   2      
+ 342   2          if (LD_Check_ASRBusyFlag_b2() == 0)
+ 343   2          {
+ 344   3            flag = 0;
+ 345   3            break;
+ 346   3          }
+ 347   2      
+ 348   2          LD_WriteReg(0xc1, pCode[k]);
+ 349   2          LD_WriteReg(0xc3, 0);
+ 350   2          LD_WriteReg(0x08, 0x04);
+ 351   2          delay(1);
+ 352   2          LD_WriteReg(0x08, 0x00);
+ 353   2          delay(1);
+ 354   2      
+ 355   2          for (nAsrAddLength = 0; nAsrAddLength < DATE_B; nAsrAddLength++)
+ 356   2          {
+ 357   3            if (sRecog[k][nAsrAddLength] == 0)
+ 358   3              break;
+ 359   3            LD_WriteReg(0x5, sRecog[k][nAsrAddLength]);
+ 360   3          }
+ 361   2          LD_WriteReg(0xb9, nAsrAddLength);
+ 362   2          LD_WriteReg(0xb2, 0xff);
+ 363   2          LD_WriteReg(0x37, 0x04);
+ 364   2        }
+C51 COMPILER V9.59.0.0   LDCHIP                                                            05/21/2021 11:49:55 PAGE 7   
+
+ 365   1        return flag;
+ 366   1      }
+ 367          /************************************************************************
+ 368          功能描述：  获取识别结果
+ 369          入口参数：  none
+ 370          返 回 值：  LD_ReadReg(0xc5 )；  读取内部寄存器返回识别码。
+ 371          其他说明：  none
+ 372          **************************************************************************/
+ 373          uint8 LD_GetResult()
+ 374          {
+ 375   1        return LD_ReadReg(0xc5);
+ 376   1      }
+
+
+MODULE INFORMATION:   STATIC OVERLAYABLE
+   CODE SIZE        =    934    ----
+   CONSTANT SIZE    =   1050    ----
+   XDATA SIZE       =   ----    ----
+   PDATA SIZE       =   ----    ----
+   DATA SIZE        =   ----       8
+   IDATA SIZE       =      1    ----
+   BIT SIZE         =   ----    ----
+END OF MODULE INFORMATION.
+
+
+C51 COMPILATION COMPLETE.  0 WARNING(S),  0 ERROR(S)

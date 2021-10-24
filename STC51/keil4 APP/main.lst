@@ -1,0 +1,505 @@
+C51 COMPILER V9.59.0.0   MAIN                                                              05/21/2021 11:49:55 PAGE 1   
+
+
+C51 COMPILER V9.59.0.0, COMPILATION OF MODULE MAIN
+OBJECT MODULE PLACED IN ..\obj\main.obj
+COMPILER INVOKED BY: D:\Keil_v5\C51\BIN\C51.EXE ..\code\main.c OPTIMIZE(8,SPEED) BROWSE INCDIR(..\code;..\user) DEBUG OB
+                    -JECTEXTEND PRINT(.\main.lst) TABS(2) OBJECT(..\obj\main.obj)
+
+line level    source
+
+   1          /*******************************************************
+   2          **  CPU: STC11L08XE
+   3          **  晶振：晶振频率在config.h下更改,只适用于12MHz和22.1184MHz
+   4          **  波特率：9600 bit/S
+   5          **  延时口令模式： 即识别时都说“寻物”这个口令唤醒后，如果15秒内不进行语音识别则退出唤醒
+   6          /*********************************************************/
+   7          #include "config.h"
+   8          /************************************************************************************/
+   9          //  nAsrStatus 用来在main主程序中表示程序运行的状态，不是LD3320芯片内部的状态寄存器
+  10          //  LD_ASR_NONE:    表示没有在作ASR识别
+  11          //  LD_ASR_RUNING：   表示LD3320正在作ASR识别中
+  12          //  LD_ASR_FOUNDOK:   表示一次识别流程结束后，有一个识别结果
+  13          //  LD_ASR_FOUNDZERO: 表示一次识别流程结束后，没有识别结果
+  14          //  LD_ASR_ERROR:   表示一次识别流程中LD3320芯片内部出现不正确的状态
+  15          /***********************************************************************************/
+  16          uint8 idata nAsrStatus = 0;
+  17          void MCU_init();
+  18          void ProcessInt0(); //识别处理函数
+  19          void delay(unsigned long uldata);
+  20          void User_handle(uint8 dat); //用户执行操作函数
+  21          void Delay200ms();
+  22          int over_time;
+  23          uint8_t Run_Mode = 0;
+  24          uint8_t G0_flag = DISABLE; //运行标志，ENABLE:运行。DISABLE:禁止运行
+  25          sbit STC_LED = P4 ^ 2;     //信号指示灯
+  26          sbit STM32_SIG = P3 ^ 3;
+  27          sbit STM32_RST = P1 ^ 5;
+  28          sbit SW0 = P1 ^ 0;
+  29          sbit SW1 = P1 ^ 1;
+  30          sbit SW2 = P1 ^ 2;
+  31          sbit SW3 = P1 ^ 3;
+  32          sbit LED = P1 ^ 7;
+  33          sbit BEEP = P1 ^ 6;
+  34          /***********************************************************
+  35          * 名    称： void  main(void)
+  36          * 功    能： 主函数 程序入口
+  37          * 入口参数：
+  38          * 出口参数：
+  39          * 说    明：
+  40          * 调用方法：
+  41          **********************************************************/
+  42          void main(void)
+  43          {
+  44   1        uint8 idata nAsrRes;
+  45   1        uint8 i = 0;
+  46   1        MCU_init();
+  47   1        LD_Reset();
+  48   1        UartInit();         /*串口初始化*/
+  49   1        nAsrStatus = LD_ASR_NONE; //初始状态：没有在作ASR
+  50   1        if (SW3 == 1)
+  51   1          Run_Mode += 8;
+  52   1        if (SW2 == 1)
+  53   1          Run_Mode += 4;
+  54   1        if (SW1 == 1)
+C51 COMPILER V9.59.0.0   MAIN                                                              05/21/2021 11:49:55 PAGE 2   
+
+  55   1          Run_Mode += 2;
+  56   1        if (SW0 == 1)
+  57   1          Run_Mode += 1;
+  58   1        UARTSendStr("系统初始化成功,模式为");
+  59   1        UARTSendByte(Run_Mode / 10 + '0');
+  60   1        UARTSendByte(Run_Mode % 10 + '0');
+  61   1        UARTSendStr("\r\n");
+  62   1        while (1)
+  63   1        {
+  64   2          if (STM32_SIG == 0)
+  65   2          {
+  66   3            BEEP = 1;
+  67   3            LED = 1;
+  68   3            UARTSendStr("接收到STM32 蓝牙信号\r\n");
+  69   3          }
+  70   2          if (over_time >= 500)
+  71   2          {
+  72   3            over_time = 0;
+  73   3            G0_flag = DISABLE;
+  74   3            STC_LED = 1;
+  75   3            UARTSendStr("识别超时\r\n");
+  76   3          }
+  77   2          switch (nAsrStatus)
+  78   2          {
+  79   3          case LD_ASR_RUNING:
+  80   3          case LD_ASR_ERROR:
+  81   3            break;
+  82   3          case LD_ASR_NONE:
+  83   3          {
+  84   4            nAsrStatus = LD_ASR_RUNING;
+  85   4            if (RunASR() == 0) /* 启动一次ASR识别流程：ASR初始化，ASR添加关键词语，启动ASR运算*/
+  86   4            {
+  87   5              nAsrStatus = LD_ASR_ERROR;
+  88   5            }
+  89   4            break;
+  90   4          }
+  91   3          case LD_ASR_FOUNDOK: /* 一次ASR识别流程结束，去取ASR识别结果*/
+  92   3          {
+  93   4            nAsrRes = LD_GetResult(); /*获取结果*/
+  94   4            User_handle(nAsrRes);   //用户执行函数
+  95   4            nAsrStatus = LD_ASR_NONE;
+  96   4            break;
+  97   4          }
+  98   3          case LD_ASR_FOUNDZERO:
+  99   3          default:
+ 100   3          {
+ 101   4            nAsrStatus = LD_ASR_NONE;
+ 102   4            break;
+ 103   4          }
+ 104   3          } // switch
+ 105   2        }   // while
+ 106   1      }
+ 107          
+ 108          /***********************************************************
+ 109          * 名    称： void MCU_init()
+ 110          * 功    能： 单片机初始化
+ 111          * 入口参数：
+ 112          * 出口参数：
+ 113          * 说    明：
+ 114          * 调用方法：
+ 115          **********************************************************/
+ 116          void MCU_init()
+C51 COMPILER V9.59.0.0   MAIN                                                              05/21/2021 11:49:55 PAGE 3   
+
+ 117          {
+ 118   1        P0 = 0xff;
+ 119   1        P1 = 0x00;
+ 120   1        P2 = 0xff;
+ 121   1        P3 = 0xff;
+ 122   1        P4 = 0xff;
+ 123   1        
+ 124   1        P1M1 = 0x00;
+ 125   1        P1M0 = 0xE0;
+ 126   1        P3M1 &= 0111;
+ 127   1        P3M0 &= 0111;
+ 128   1        STM32_SIG = 1;
+ 129   1        SW3 = SW2 = SW1 = SW0 = 1;
+ 130   1        LED = 0;
+ 131   1        BEEP = 0;
+ 132   1        STC_LED = 1;
+ 133   1        STM32_RST = 0;
+ 134   1        Delay200ms();
+ 135   1        STM32_RST = 1;
+ 136   1      
+ 137   1        AUXR &= 0x7F; //定时器时钟12T模式
+ 138   1        TMOD |= 0x01; //设置定时器模式
+ 139   1      #if (FOSC == 22118400L)
+ 140   1        TL0 = 0x00; //设置定时初值
+ 141   1        TH0 = 0x28; //设置定时初值
+ 142   1      #else
+                TL0 = 0xD0;
+                TH0 = 0x8A;
+              #endif
+ 146   1        TF0 = 0; //清除TF0标志
+ 147   1        TR0 = 1; //定时器0开始计时
+ 148   1        ET0 = 1;
+ 149   1      
+ 150   1        LD_MODE = 0; // 设置MD管脚为低，并行模式读写
+ 151   1        IE0 = 1;
+ 152   1        EX0 = 1;
+ 153   1        EA = 1;
+ 154   1        WDT_CONTR = 0x3D;
+ 155   1      }
+ 156          /***********************************************************
+ 157          * 名    称：  延时函数
+ 158          * 功    能：
+ 159          * 入口参数：
+ 160          * 出口参数：
+ 161          * 说    明：
+ 162          * 调用方法：
+ 163          **********************************************************/
+ 164          void Delay200us() //@22.1184MHz
+ 165          {
+ 166   1      #if (FOSC == 22118400L)
+ 167   1        unsigned char i, j;
+ 168   1        _nop_();
+ 169   1        _nop_();
+ 170   1        i = 5;
+ 171   1        j = 73;
+ 172   1        do
+ 173   1        {
+ 174   2          while (--j)
+ 175   2            ;
+ 176   2        } while (--i);
+ 177   1      #else
+                unsigned char i, j;
+C51 COMPILER V9.59.0.0   MAIN                                                              05/21/2021 11:49:55 PAGE 4   
+
+              
+                _nop_();
+                _nop_();
+                i = 3;
+                j = 81;
+                do
+                {
+                  while (--j)
+                    ;
+                } while (--i);
+              #endif
+ 190   1      }
+ 191          
+ 192          void delay(unsigned long uldata)
+ 193          {
+ 194   1        unsigned int j = 0;
+ 195   1        unsigned int g = 0;
+ 196   1        while (uldata--)
+ 197   1          Delay200us();
+ 198   1      }
+ 199          
+ 200          void Delay200ms() //@22.1184MHz
+ 201          {
+ 202   1      #if (FOSC == 22118400L)
+ 203   1        unsigned char i, j, k;
+ 204   1        i = 17;
+ 205   1        j = 208;
+ 206   1        k = 27;
+ 207   1        do
+ 208   1        {
+ 209   2          do
+ 210   2          {
+ 211   3            while (--k)
+ 212   3              ;
+ 213   3          } while (--j);
+ 214   2        } while (--i);
+ 215   1      #else
+                unsigned char i, j, k;
+              
+                i = 10;
+                j = 31;
+                k = 147;
+                do
+                {
+                  do
+                  {
+                    while (--k)
+                      ;
+                  } while (--j);
+                } while (--i);
+              #endif
+ 230   1      }
+ 231          
+ 232          /***********************************************************
+ 233          * 名    称： 中断处理函数
+ 234          * 功    能：
+ 235          * 入口参数：
+ 236          * 出口参数：
+ 237          * 说    明：
+ 238          * 调用方法：
+ 239          **********************************************************/
+ 240          void ExtInt0Handler(void) interrupt 0
+C51 COMPILER V9.59.0.0   MAIN                                                              05/21/2021 11:49:55 PAGE 5   
+
+ 241          {
+ 242   1        ProcessInt0();
+ 243   1      }
+ 244          /***********************************************************
+ 245          * 名    称：用户执行函数
+ 246          * 功    能：识别成功后，执行动作可在此进行修改
+ 247          * 入口参数： 无
+ 248          * 出口参数：无
+ 249          * 说    明：
+ 250          **********************************************************/
+ 251          void User_handle(uint8 dat)
+ 252          {
+ 253   1        uint8_t i = 0;
+ 254   1        if (0 == dat)
+ 255   1        {
+ 256   2          G0_flag = ENABLE;
+ 257   2          over_time = 0;
+ 258   2          UARTSendStr("成功识别一级口令\r\n");
+ 259   2          STC_LED = 0;
+ 260   2          for (i = 0; i < 3; i++)
+ 261   2          {
+ 262   3            LED = 0;
+ 263   3            Delay200ms();
+ 264   3            Delay200ms();
+ 265   3            LED = 1;
+ 266   3            Delay200ms();
+ 267   3            Delay200ms();
+ 268   3          }
+ 269   2        }
+ 270   1        else if (ENABLE == G0_flag)
+ 271   1        {
+ 272   2          LED = 1;
+ 273   2          BEEP = 1;
+ 274   2          STC_LED = 1;
+ 275   2          switch (dat)
+ 276   2          {
+ 277   3          case CODE_1:
+ 278   3            UARTSendStr("钥匙\r\n");
+ 279   3            if (Run_Mode == 0)
+ 280   3            {
+ 281   4              G0_flag = DISABLE;
+ 282   4              LED = 1;
+ 283   4              BEEP = 1;
+ 284   4              STC_LED = 1;
+ 285   4              UARTSendStr("模块响应\r\n");
+ 286   4            }
+ 287   3            break;
+ 288   3          case CODE_2:
+ 289   3            UARTSendStr("钱包\r\n");
+ 290   3            if (Run_Mode == 1)
+ 291   3            {
+ 292   4              G0_flag = DISABLE;
+ 293   4              LED = 1;
+ 294   4              BEEP = 1;
+ 295   4              STC_LED = 1;
+ 296   4              UARTSendStr("模块响应\r\n");
+ 297   4            }
+ 298   3            break;
+ 299   3          case CODE_3:
+ 300   3            UARTSendStr("遥控器\r\n");
+ 301   3            if (Run_Mode == 2)
+ 302   3            {
+C51 COMPILER V9.59.0.0   MAIN                                                              05/21/2021 11:49:55 PAGE 6   
+
+ 303   4              G0_flag = DISABLE;
+ 304   4              LED = 1;
+ 305   4              BEEP = 1;
+ 306   4              STC_LED = 1;
+ 307   4              UARTSendStr("模块响应\r\n");
+ 308   4            }
+ 309   3            break;
+ 310   3          case CODE_4:
+ 311   3            UARTSendStr("校园卡\r\n");
+ 312   3            if (Run_Mode == 3)
+ 313   3            {
+ 314   4              G0_flag = DISABLE;
+ 315   4              LED = 1;
+ 316   4              BEEP = 1;
+ 317   4              STC_LED = 1;
+ 318   4              UARTSendStr("模块响应\r\n");
+ 319   4            }
+ 320   3            break;
+ 321   3          case CODE_5:
+ 322   3            UARTSendStr("手机\r\n");
+ 323   3            if (Run_Mode == 4)
+ 324   3            {
+ 325   4              G0_flag = DISABLE;
+ 326   4              LED = 1;
+ 327   4              BEEP = 1;
+ 328   4              STC_LED = 1;
+ 329   4              UARTSendStr("模块响应\r\n");
+ 330   4            }
+ 331   3            break;
+ 332   3          case CODE_6:
+ 333   3            UARTSendStr("鼠标\r\n");
+ 334   3            if (Run_Mode == 5)
+ 335   3            {
+ 336   4              G0_flag = DISABLE;
+ 337   4              LED = 1;
+ 338   4              BEEP = 1;
+ 339   4              STC_LED = 1;
+ 340   4              UARTSendStr("模块响应\r\n");
+ 341   4            }
+ 342   3            break;
+ 343   3          case CODE_7:
+ 344   3            UARTSendStr("门卡\r\n");
+ 345   3            if (Run_Mode == 6)
+ 346   3            {
+ 347   4              G0_flag = DISABLE;
+ 348   4              LED = 1;
+ 349   4              BEEP = 1;
+ 350   4              STC_LED = 1;
+ 351   4              UARTSendStr("模块响应\r\n");
+ 352   4            }
+ 353   3            break;
+ 354   3          case CODE_8:
+ 355   3            UARTSendStr("U盘\r\n");
+ 356   3            if (Run_Mode == 7)
+ 357   3            {
+ 358   4              G0_flag = DISABLE;
+ 359   4              LED = 1;
+ 360   4              BEEP = 1;
+ 361   4              STC_LED = 1;
+ 362   4              UARTSendStr("模块响应\r\n");
+ 363   4            }
+ 364   3            break;
+C51 COMPILER V9.59.0.0   MAIN                                                              05/21/2021 11:49:55 PAGE 7   
+
+ 365   3          case CODE_9:
+ 366   3            UARTSendStr("杯子\r\n");
+ 367   3            if (Run_Mode == 8)
+ 368   3            {
+ 369   4              G0_flag = DISABLE;
+ 370   4              LED = 1;
+ 371   4              BEEP = 1;
+ 372   4              STC_LED = 1;
+ 373   4              UARTSendStr("模块响应\r\n");
+ 374   4            }
+ 375   3            break;
+ 376   3          case CODE_10:
+ 377   3            UARTSendStr("药箱\r\n");
+ 378   3            if (Run_Mode == 9)
+ 379   3            {
+ 380   4              G0_flag = DISABLE;
+ 381   4              LED = 1;
+ 382   4              BEEP = 1;
+ 383   4              STC_LED = 1;
+ 384   4              UARTSendStr("模块响应\r\n");
+ 385   4            }
+ 386   3            break;
+ 387   3          case CODE_11:
+ 388   3            UARTSendStr("耳机\r\n");
+ 389   3            if (Run_Mode == 10)
+ 390   3            {
+ 391   4              G0_flag = DISABLE;
+ 392   4              LED = 1;
+ 393   4              BEEP = 1;
+ 394   4              STC_LED = 1;
+ 395   4              UARTSendStr("模块响应\r\n");
+ 396   4            }
+ 397   3            break;
+ 398   3          case CODE_12:
+ 399   3            UARTSendStr("记事本\r\n");
+ 400   3            if (Run_Mode == 11)
+ 401   3            {
+ 402   4              G0_flag = DISABLE;
+ 403   4              LED = 1;
+ 404   4              BEEP = 1;
+ 405   4              STC_LED = 1;
+ 406   4              UARTSendStr("模块响应\r\n");
+ 407   4            }
+ 408   3            break;
+ 409   3          case CODE_13:
+ 410   3            UARTSendStr("存钱罐\r\n");
+ 411   3            if (Run_Mode == 12)
+ 412   3            {
+ 413   4              G0_flag = DISABLE;
+ 414   4              LED = 1;
+ 415   4              BEEP = 1;
+ 416   4              STC_LED = 1;
+ 417   4              UARTSendStr("模块响应\r\n");
+ 418   4            }
+ 419   3            break;
+ 420   3          case CODE_14:
+ 421   3            UARTSendStr("电脑\r\n");
+ 422   3            if (Run_Mode == 13)
+ 423   3            {
+ 424   4              G0_flag = DISABLE;
+ 425   4              LED = 1;
+ 426   4              BEEP = 1;
+C51 COMPILER V9.59.0.0   MAIN                                                              05/21/2021 11:49:55 PAGE 8   
+
+ 427   4              STC_LED = 1;
+ 428   4              UARTSendStr("模块响应\r\n");
+ 429   4            }
+ 430   3            break;
+ 431   3          case CODE_15:
+ 432   3            UARTSendStr("血压计\r\n");
+ 433   3            if (Run_Mode == 14)
+ 434   3            {
+ 435   4              G0_flag = DISABLE;
+ 436   4              LED = 1;
+ 437   4              BEEP = 1;
+ 438   4              STC_LED = 1;
+ 439   4              UARTSendStr("模块响应\r\n");
+ 440   4            }
+ 441   3            break;
+ 442   3          default:
+ 443   3            UARTSendStr("识别错误\r\n");
+ 444   3            break;
+ 445   3          }
+ 446   2        }
+ 447   1        else
+ 448   1        {
+ 449   2          UARTSendStr("先读出一级口令\r\n");
+ 450   2        }
+ 451   1      }
+ 452          
+ 453          void tm0_isr() interrupt 1
+ 454          {
+ 455   1      #if (FOSC == 22118400L)
+ 456   1        TL0 = 0x00; //设置定时初值
+ 457   1        TH0 = 0x28; //设置定时初值
+ 458   1      #else
+                TL0 = 0xD0;
+                TH0 = 0x8A;
+              #endif
+ 462   1        WDT_CONTR = 0x3D;
+ 463   1        if (G0_flag == ENABLE)
+ 464   1        {
+ 465   2          over_time++;
+ 466   2        }
+ 467   1      }
+
+
+MODULE INFORMATION:   STATIC OVERLAYABLE
+   CODE SIZE        =    866    ----
+   CONSTANT SIZE    =    231    ----
+   XDATA SIZE       =   ----    ----
+   PDATA SIZE       =   ----    ----
+   DATA SIZE        =      4      10
+   IDATA SIZE       =      1       1
+   BIT SIZE         =   ----    ----
+END OF MODULE INFORMATION.
+
+
+C51 COMPILATION COMPLETE.  0 WARNING(S),  0 ERROR(S)
